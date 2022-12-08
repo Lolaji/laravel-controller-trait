@@ -3,7 +3,7 @@ namespace Lolaji\LaravelControllerTrait;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Validator;
+use Illuminate\Contracts\Validation\Validator;
 
 
 trait LaravelControllerTrait 
