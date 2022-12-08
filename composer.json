@@ -1,0 +1,25 @@
+{
+    "name": "lolaji/laravel-controller-trait",
+    "description": "A reuseable controller trait for laravel controller",
+    "keywords": [
+        "lolaji",
+        "laravel",
+        "lolaji-laravel-controller-trait",
+        "reuseable controller",
+        "reuseable model"
+    ],
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Lolaji\\LaravelControllerTrait\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Ajibola Salami",
+            "email": "ayo.lolade@gmail.com"
+        }
+    ],
+    "require": {}
+}
