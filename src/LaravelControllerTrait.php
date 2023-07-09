@@ -1,9 +1,11 @@
 <?php
 namespace Lolaji\LaravelControllerTrait;
 
+use App\Helpers\Arr as HelpersArr;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 
 trait LaravelControllerTrait 
@@ -137,10 +139,10 @@ trait LaravelControllerTrait
         return $response;
     }
 
-    public function deattach (Request $request, $id, $relationship)
+    public function deattach (Request $request, $id, $relationship, $relationship_id=null)
     {
         $response = ['success' => false, 'message'=>''];
-        $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching'];
+        $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot'];
 
         // form input
         $operation = $request->post('operation');
@@ -153,8 +155,15 @@ trait LaravelControllerTrait
             $is_reach_max_attach_limit = $this->__reachedMaxAttachLimit($instance, $relationship);
 
             if ($value && (!empty($value) || !is_null($value))) {
-                if (!$is_reach_max_attach_limit) {
-                    if ($data = $instance->$relationship()->$operation($value)) {
+                if (!$is_reach_max_attach_limit || !is_null($relationship_id)) {
+                    $data = null;
+                    if (!is_null($relationship_id)) {
+                        $data = $instance->$relationship()->$operation($relationship_id, $value);
+                    } else {
+                        $data = $instance->$relationship()->$operation($value);
+                    }
+
+                    if ($data) {
                         
                         $call_hook_return_data = $this->__callHook(
                             $request, 
@@ -177,7 +186,7 @@ trait LaravelControllerTrait
                     }
                 } else {
                     $response['success'] = false;
-                    $response['message'] = "reached-maximum-attach-limit";
+                    $response['message'] = !is_null($relationship_id)? "update-failed": "reached-maximum-attach-limit";
                 }
             } else {
                 $response['success'] = false;
@@ -190,30 +199,54 @@ trait LaravelControllerTrait
         return $response;
     }
 
+    public function search(Request $request, $relationName=null)
+    {
+        $response = ['result' => []];
+
+        $class = $this->_model;
+        $model = new $class();
+
+        $term = $request->get('term', null);
+        $relationship = $request->get('relationship', []);
+        $limit = $request->get('limit', 10);
+
+        $search_columns = $this->getSearchColumns($relationName);
+
+        if (count($search_columns) > 1) {
+            $model->where(function($query) use ($search_columns, $term) {
+                foreach ($search_columns as $column) {
+                    $query->where($column, 'like', "%$term%");
+                }
+            });
+        } else {
+            $model->where($search_columns[0], 'like', "%$term%");
+        }
+
+        if(!empty($relationship)) {
+            $model->with($relationship);
+        }
+
+        if($limit)
+            $model->limit($limit);
+
+        $response['result'] = $model->get();
+
+        return $response;
+    }
+
     public function get (Request $request, $id, $relationModel=null)
     {
         $modelObj = $this->_model::findOrFail($id);
         $loadModel = $request->get('load_models');
-        $where = $request->get('where');
-        $call = $request->get('call');
 
         if (!is_null($relationModel)) {
             if ($loadModel){
                 return $modelObj->$relationModel->load($loadModel);
             }
-            $modelObj = $modelObj->$relationModel;
+            return $modelObj->$relationModel;
         } else {
-            if ($loadModel) {
+            if ($loadModel){
                 $modelObj->load($loadModel);
-            }
-        }
-
-        
-        if ($where) {
-            
-            $where_decode = json_decode($where);
-            if (is_array($where) && $this->_isMulti($where) && !$this->_hasEmptyMulti($where)) {
-                $modelObj = $modelObj->where($where);
             }
         }
 
@@ -224,10 +257,6 @@ trait LaravelControllerTrait
             if (!is_null($auth_return)) {
                 return $auth_return;
             }
-        }
-
-        if ($call) {
-            return $modelObj->$call();
         }
         
         return $modelObj;
@@ -242,15 +271,13 @@ trait LaravelControllerTrait
         $relationship = $request->get('relationship', []);
         $limit = $request->get('limit');
         $offset = $request->get('offset');
-        $pagination = $request->get('pagination', []);
-        $page = $request->get('page', false);
 
         $model = $this->_model;
         $instance = new $model();
 
         if ($where) {
             $where_decode = json_decode($where);
-            if (is_array($where_decode) && $this->_isMulti($where_decode) && !$this->_hasEmptyMulti($where_decode)) {
+            if (is_array($where_decode) && HelpersArr::isMulti($where_decode) && !HelpersArr::hasEmptyMulti($where_decode)) {
                 $instance = $instance->where($where_decode);
             }
         }
@@ -275,25 +302,14 @@ trait LaravelControllerTrait
             $instance->offset($limit);
         }
 
+        if (!empty($fields)) {
+            return $instance->get($fields);
+        }
+
         if ($returnCount) {
             $results = $instance->count();
         } else {
-            if (!empty($pagination) && $page) {
-                $results = $instance->paginate($pagination->per_page ?? 10);
-
-                if (isset ($pagination->path) && !is_null($pagination->path)) {
-                    $results->withPath($pagination->path);
-                }
-
-                if (isset($pagination->appends) && !empty($pagination->appends)) {
-                    $results->appends($pagination->appends);
-                }
-
-            } else if (!empty($fields)) {
-                $results = $instance->get($fields);
-            } else {
-                $results = $instance->get();
-            }
+            $results = $instance->get();
         }
 
         //call the $this->_authorize() method if defined in the controller.
@@ -454,6 +470,24 @@ trait LaravelControllerTrait
         return $this->__response;
     }
 
+    public function getSearchColumns($relationName=null)
+    {
+        $property = !is_null($relationName)? 
+            "_{$relationName}_search_columns" : '_search_columns';
+
+        if (isset($this->$property)) {
+            return $this->$property;
+        }
+    }
+
+    public function setSearchColumns($columns=[], $relationName=null)
+    {
+        $property = !is_null($relationName)? 
+            "_{$relationName}_search_columns" : '_search_columns';
+
+        $this->$property = $columns;
+    }
+
     /**
      * validate the maximum attach limit 
      * if the property $this->_{$relationship}_attach_limit of $relationship isset
@@ -468,22 +502,6 @@ trait LaravelControllerTrait
         if (isset($this->$property)) {
             return count($instance->$relationship) == $this->$property;
         }
-        return false;
-    }
-
-    protected function _isMulti (array $array)
-    {
-        $inner = array_filter($array,'is_array');
-        if(count($inner)>0) return true;
-        return false;
-    }
-
-    protected function _hasEmptyMulti (array $array)
-    {
-        $inner = array_filter($array, function ($inner) {
-            return empty($inner);
-        });
-        if (count($inner) > 0) return true;
         return false;
     }
 
