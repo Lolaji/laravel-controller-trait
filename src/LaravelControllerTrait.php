@@ -337,7 +337,7 @@ trait LaravelControllerTrait
         $valideRelationModels = $this->_getRelationModels();
 
         $model = $this->_model;
-        $instance = new $model();
+        $instance = new $model(); 
 
         if ($where && is_string($where)) {
             $where_decode = json_decode($where, true);
