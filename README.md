@@ -1,6 +1,6 @@
 # Laravel Controller Trait - A reuseable laravel controllers
 
-Laravel Controller Trait is a Laravel reuseable trait that can help you reduce the amount of logic you write for your laravel application.
+Laravel Controller Trait is a Laravel reuseable package that helps you reduce the amount of logic you write for your laravel application.
 
 ## Install Package
 
