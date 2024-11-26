@@ -1,12 +1,14 @@
 <?php
 namespace Lolaji\LaravelControllerTrait;
 
-use App\Helpers\Arr as HelpersArr;
+use Exception;
+use Lolaji\LaravelControllerTrait\Helpers\Arr as HelpersArr;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Str;
-
+use Lolaji\LaravelControllerTrait\Enum\DeattachMethodEnum;
+use Lolaji\LaravelControllerTrait\Exceptions\RequestMethodException;
+use Lolaji\LaravelControllerTrait\Helpers\Str;
 
 trait LaravelControllerTrait 
 {
@@ -41,6 +43,16 @@ trait LaravelControllerTrait
 
         $cred = $this->__getRequestData($request);
 
+        // return error if the $cred is empty.
+        // This error occure due to _fillable property that has not 
+        // been decleared in the controller, or decleared and empty.
+        if (empty($cred)) {
+            return response(
+                content: "Not Allowed: Credential Error.",
+                status: 405
+            );
+        }
+
         $model = $this->_model;
         $instance = new $model();
         $operation = "create";
@@ -65,9 +77,7 @@ trait LaravelControllerTrait
 
             $response['success'] = true;
             $response['operation'] = $operation;
-            // if (isset($this->_send_data_with_request_response) && ($this->_send_data_with_request_response == true)) {
-                $response['data'] = $data;
-            // }
+            $response['data'] = $this->__makeResource ("upsert", $data);
             $response['message'] = "Sucessfully {$operation}d";
 
             // append data return from $this->_hook() method in the controller
@@ -101,6 +111,16 @@ trait LaravelControllerTrait
 
         $cred = $this->__getRequestData($request, true, $relationModel);
 
+        // return error if the $cred is empty.
+        // This error occure due to _{relationship}_fillable property that has not 
+        // been decleared in the parent controller, or decleared and empty.
+        if (empty($cred)) {
+            return response(
+                content: "Not Allowed: Credential Error.",
+                status: 405
+            );
+        }
+
         $parentModel = $this->_model::findOrFail(intval($id));
         $modelObj = $parentModel->$relationModel();
         $operation = 'create';
@@ -120,10 +140,18 @@ trait LaravelControllerTrait
         $this->__callAuthorize($request, $operation, $childModel, $relationModel);
         
         if ($data = $modelObj->$operation($cred)) {
-            $data = ($operation == 'create')? $data : $parentModel->$relationModel()->find($relationModelId);
+            // $data = ($operation == 'create')? $data : $parentModel->$relationModel()->find($relationModelId);
+            if ($operation != 'create') {
+                if(isset($parentModel->$relationModel->id)) {
+                    $data = $parentModel->$relationModel;
+                } else {
+                    $data = $parentModel->$relationModel()->find($relationModelId);
+                }
+            }
+
             $call_hook_return_data = $this->__callHook($request, $data, "{$operation}d", true, $relationModel);
             $response['success'] = true;
-            $response['data'] = $data;
+            $response['data'] = $this->__makeResource("upsert", $data, $relationModel);
             $response['operation'] = $operation;
             $response['message'] = ucfirst($relationModel)." {$operation}d successfully.";
 
@@ -142,7 +170,7 @@ trait LaravelControllerTrait
     public function deattach (Request $request, $id, $relationship, $relationship_id=null)
     {
         $response = ['success' => false, 'message'=>''];
-        $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot'];
+        $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot', 'syncWithPivotValues'];
 
         // form input
         $operation = $request->post('operation');
@@ -152,23 +180,37 @@ trait LaravelControllerTrait
             $model = $this->_model;
             $instance = (new $model())->findOrFail($id);
 
+            $this->__callAuthorize($request, $operation, $instance);
+
             $is_reach_max_attach_limit = $this->__reachedMaxAttachLimit($instance, $relationship);
 
             if ($value && (!empty($value) || !is_null($value))) {
                 if (!$is_reach_max_attach_limit || !is_null($relationship_id)) {
                     $data = null;
-                    if (!is_null($relationship_id)) {
-                        $data = $instance->$relationship()->$operation($relationship_id, $value);
+                    $res = null;
+                    if (in_array($relationship, $this->_getRelationModels())) {
+                        if (!is_null($relationship_id)) {
+                            $res = $instance->$relationship()->$operation($relationship_id, $value);
+                        } else {
+                            $res = $instance->$relationship()->$operation($value);
+                        }
                     } else {
-                        $data = $instance->$relationship()->$operation($value);
+                        return RequestMethodException::response(
+                            debug_message: "Deattach Method Error: \"{$relationship}\" model does not exist and/or is not decleared in the parent controller.",
+                            debug_status: 409,
+                            message: "Resource could not be found",
+                            status: 404
+                        );
                     }
 
-                    if ($data) {
+                    $data = $this->_serializeDeattachReponse($operation, $value, $res);
+
+                    // if ($data) {
                         
                         $call_hook_return_data = $this->__callHook(
                             $request, 
                             ['instance'=>$instance, 'relationship'=> $relationship, 'data'=>$data], 
-                            "{$operation}ed"
+                            "{$operation}"
                         );
 
                         $response['success'] = true;
@@ -177,13 +219,13 @@ trait LaravelControllerTrait
                         $response['message'] = "{$operation}ed";
 
                         // append data return from $this->_hook() method in the controller
-                        // to $response variable if not null or empty
-                        if (! is_null($call_hook_return_data) && !empty($call_hook_return_data))
+                        // to $response variable if not null and empty
+                        if (!is_null($call_hook_return_data) && !empty($call_hook_return_data))
                             $response['hook'] = $call_hook_return_data;
-                    } else {
-                        $response['success'] = false;
-                        $response['message'] = "Unable to {$operation} due to system error.";
-                    }
+                    // } else {
+                    //     $response['success'] = false;
+                    //     $response['message'] = "Unable to {$operation} due to system error.";
+                    // }
                 } else {
                     $response['success'] = false;
                     $response['message'] = !is_null($relationship_id)? "update-failed": "reached-maximum-attach-limit";
@@ -234,98 +276,133 @@ trait LaravelControllerTrait
         return $response;
     }
 
-    public function get (Request $request, $id, $relationModel=null)
+    public function get (Request $request, $id, $relationModel=null, $relationModelId=null)
     {
-        $modelObj = $this->_model::findOrFail($id);
-        $loadModel = $request->get('load_models');
+        $modelObj = $this->_model::find($id);
+        
+        if (is_null($modelObj)) return null;
+        
+        $loadModelQueryString = $request->get('load_models');
+        $valideRelationModels = $this->_getRelationModels($relationModel);
 
         if (!is_null($relationModel)) {
-            if ($loadModel){
-                return $modelObj->$relationModel->load($loadModel);
+            if(! in_array($relationModel, $this->_getRelationModels()) ) {
+                return abort(404, "Not found");
             }
-            return $modelObj->$relationModel;
-        } else {
-            if ($loadModel){
-                $modelObj->load($loadModel);
+
+            $modelObj = $modelObj->$relationModel;
+
+            if (!is_null($relationModelId)) {
+                $modelObj = $modelObj->find($relationModelId);
+                if (is_null($modelObj)) return abort(404, "Not found");
             }
+
         }
 
-        //call the $this->_authorize() method if defined in the controller.
-        //and return the data if not null
-        if (method_exists($this, '_authorize')) {
-            $auth_return = $this->_authorize('get', $request, 'get', $modelObj);
-            if (!is_null($auth_return)) {
-                return $auth_return;
-            }
+            $this->__callAuthorize($request, 'get', $modelObj, $relationModel);
+
+        if (!is_null($loadModelQueryString) && !empty($valideRelationModels)) {
+            $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $loadModelQueryString);
+            
+            // remove all the elements in $loadModelQueryStringArr that do not exist 
+            // in the $validateRelationModels
+            $loadModel = array_intersect($loadModelQueryStringArr, $valideRelationModels);
         }
-        
-        return $modelObj;
+
+        if (!empty($loadModel)) {
+            $modelObj = $modelObj->load($loadModel);
+        }
+
+        //call the $this->_resource() method if defined in the controller.
+        //and return the data if not null
+
+        return $this->__makeResource('get', $modelObj, $relationModel, $relationModelId);
     }
 
     public function fetch (Request $request)
     {
+        
+        $this->__callAuthorize($request, "fetch");
+
         $returnCount = $request->get('count', false);
         $sort = $request->get('sort');
-        $where = $request->get('where');
+        $where = $request->get('filters');
         $fields = $request->get('fields', []);
-        $relationship = $request->get('relationship', []);
+        $relationshipQueryString = $request->get('with');
+        $countRelationship = $request->get("count_with", false);
+        $paginate = $request->get('paginate');
         $limit = $request->get('limit');
         $offset = $request->get('offset');
+
+        $valideRelationModels = $this->_getRelationModels();
 
         $model = $this->_model;
         $instance = new $model();
 
-        if ($where) {
-            $where_decode = json_decode($where);
-            if (is_array($where_decode) && HelpersArr::isMulti($where_decode) && !HelpersArr::hasEmptyMulti($where_decode)) {
-                $instance = $instance->where($where_decode);
-            }
+        if ($where && is_string($where)) {
+            $where_decode = json_decode($where, true);
+            $where_clauses = $this->__getWhereClause($where_decode);
+            if (!empty($where_clauses))
+                $instance = $instance->where($where_clauses);
         }
 
-        if (is_array($relationship) && !empty($relationship)) {
-            $instance->with($relationship);
+        if (!is_null($relationshipQueryString) && !empty($valideRelationModels)) {
+            $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $relationshipQueryString);
+            
+            // remove all the elements in $loadModelQueryStringArr that do not exist 
+            // in the $validateRelationModels
+            $withModels = array_intersect($loadModelQueryStringArr, $valideRelationModels);
+            $withMethod = ($countRelationship) ? "withCount" : "with";
+            $instance = $instance->$withMethod(...$withModels);
         }
 
         if ($sort) {
             if (is_array($sort) && (count($sort) == 2)) {
-                $instance = $instance->orderBy($sort[0], $sort[1]);
+               $instance = $instance->orderBy($sort[0], $sort[1]);
             } elseif (is_string($sort)) {
                 $instance = $instance->latest($sort);
             }
         }
         
         if (is_numeric($limit)) {
-            $instance->limit($limit);
+            $instance = $instance->limit((int) $limit);
         }
 
         if (is_numeric($offset)) {
-            $instance->offset($limit);
+            $instance = $instance->offset($limit);
         }
 
         if (!empty($fields)) {
             return $instance->get($fields);
         }
 
-        if ($returnCount) {
-            $results = $instance->count();
+        if ( !is_null( $this->_getPaginate() ) ) {
+            $results = $instance->paginate( $this->_getPaginate() );
+        } else if( !is_null($paginate) && is_numeric($paginate) ) {
+            $results = $instance->paginate((int) $paginate);
         } else {
-            $results = $instance->get();
-        }
-
-        //call the $this->_authorize() method if defined in the controller.
-        //and return the data if not null
-        if (method_exists($this, '_authorize')) {
-            $auth_return = $this->_authorize('fetch', $request, 'fetch', $results);
-            if (!is_null($auth_return)) {
-                return $auth_return;
+            if ($returnCount) {
+                $results = $instance->count();
+            } else {
+                $results = $instance->get();
             }
         }
 
-        return $results;
+        return $this->__makeResource('fetch', $results);
     }
     
     public function destroy (Request $request, $id)
     {
+        // validate id is number or commer-separated numbers
+        if (!is_numeric($id)) {
+            if (!Str::isCommerSeparatedNumbers($id)) {
+                return response(
+                    content: "Invalid ID: ID must be a number or commer-separated numbers.",
+                    status: 422
+                );
+            }
+        }
+
         $operation = 'delete';
         // Run $this->_enter() method if exist
         if (method_exists($this, '_enter')){
@@ -354,12 +431,83 @@ trait LaravelControllerTrait
         if (!is_null($auth_return)) {
             return $auth_return;
         }
-        
+
         if ( $this->_model::destroy($id)) {
             $this->__callHook($request, $id, 'destroyed');
             return 'true';
         }
         return 'false';
+    }
+
+    private function _serializeDeattachReponse($operation, $value, $res=null)
+    {
+        switch($operation) {
+            case "sync":
+            case "syncWithoutDetaching":
+                return $res;
+
+            default:
+                return $value;
+        }
+    }
+
+    private function __getWhereClause($where) 
+    {
+        if (isset($this->_result_filters)) { // Checks if _result_filters is set in the parent controller
+            if (is_array($where) && Arr::isAssoc($where) && !HelpersArr::hasEmptyMulti($where)) { // Checks if $where is an array and associative array
+                $filters = $this->_result_filters;
+                $query_filter = array_intersect_key($where, $filters);
+                $where_clauses = Arr::map($query_filter, function($value, string $key) use($filters) {
+                    $operator = $filters[$key];
+                    $field = $key;
+                    if (strpos($key, "__") !== false) {
+                        $field = explode("__", $key)[0];
+                    }
+                    return [$field, $operator, $value];
+                });
+                return array_values($where_clauses);
+            }
+        }
+        return [];
+    }
+
+    /**
+     * Gets user pre-defined relationship
+     */
+    protected function _getRelationModels($relationship=null)
+    {
+        $relation_model_property = "_relation_models";
+        if (!is_null($relationship)) {
+            $relation_model_property = "_{$relationship}_relation_models";
+        }
+        
+        if (isset($this->$relation_model_property)) {
+            return $this->$relation_model_property;
+        }
+        return [];
+    }
+
+    /**
+     * Return the user predified delimiter used to separate a model relationship
+     * in the request query string, that will eager-load during model retriever 
+     * and if not specified a default ":" will be used
+     * 
+     * @return string 
+     */
+    protected function _getQueryStringLoadModelDelimiter(): string
+    {
+        if (isset($this->_load_model_delimiter)) {
+            return $this->_load_model_delimiter;
+        }
+        return ":";
+    }
+
+    protected function _getPaginate(): int|null
+    {
+        if (isset($this->_paginate)) {
+            return $this->_paginate;
+        }
+        return null;
     }
 
     public function setValidateRules($validate_rules = [], $validate_message = [])
@@ -417,7 +565,7 @@ trait LaravelControllerTrait
         if (isset($this->$property) && !empty($this->$property)) {
             return $request->only($this->$property);
         }
-        return $request->all();
+        return [];
     }
 
     /**
@@ -438,7 +586,9 @@ trait LaravelControllerTrait
         $method = ($is_relational)? "_{$relationModelName}_hook" : "_hook";
         if ( (int) method_exists($this, $method) ) {
             return $this->$method($request, $model, $flag);
+            // return call_user_func_array([$this, $method], [$request, $model, $flag]);
         }
+        return null;
     }
 
     /**
@@ -452,12 +602,27 @@ trait LaravelControllerTrait
      * 
      * @return 
      */
-    private function __callAuthorize (Request $request, $operation, $model, $relationship=null) 
+    private function __callAuthorize (Request $request, $operation, $model=null, $relationship=null) 
     {
         $method = (!is_null($relationship))? "_{$relationship}_authorize" : '_authorize';
         if (method_exists($this, $method)) {
             return $this->$method($request, $operation, $model);
         }
+    }
+
+    private function __makeResource($method, $results, $relationModel=null, $relationModelId=null)
+    {
+        $resource_method = "_resource";
+        if (!is_null($relationModel)) {
+            $resource_method = "_{$relationModel}_resource";
+        }
+
+        if (method_exists($this, $resource_method)) {
+            $resource = $this->$resource_method($method, $results, $relationModel, $relationModelId);
+            if (!is_null($resource)) return $resource;
+        }
+
+        return $results;
     }
 
     public function setResponse ($response) 

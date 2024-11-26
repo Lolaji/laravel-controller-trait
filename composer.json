@@ -6,13 +6,19 @@
         "laravel",
         "lolaji-laravel-controller-trait",
         "reuseable controller",
-        "reuseable model"
+        "reuseable model",
+        "reuseable laravel model in controllers"
     ],
     "type": "library",
     "license": "MIT",
     "autoload": {
         "psr-4": {
             "Lolaji\\LaravelControllerTrait\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Lolaji\\:LaravelControllerTrait\\Tests\\": "tests/"
         }
     },
     "authors": [
@@ -23,5 +29,8 @@
     ],
     "require": {
         "php": "^8.0.1"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.1"
     }
 }
