@@ -2,10 +2,25 @@
 
 Laravel Controller Trait is a Laravel reuseable trait that can help you reduce the amount of logic you write for your laravel application.
 
-## Require
+## Install Package
 
 ```sh
 composer require lolaji/laravel-controller-trait
+
+```
+or add the package to your composer.json
+
+```json
+{
+    "lolaji/laravel-controller-trait": "^2.0.0"
+}
+
+```
+
+Then, run
+
+```sh
+composer update
 
 ```
 
