@@ -6,7 +6,7 @@ Laravel Controller Trait is a Laravel reuseable trait that can help you reduce t
 
 First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelControllerTrait"" trait
 
-<code>
+```php
 <?php
 
     namespace App\HTTP;
@@ -43,5 +43,6 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
             }
         }
     }
-</code>
+
+
 
