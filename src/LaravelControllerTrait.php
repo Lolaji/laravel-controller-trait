@@ -63,7 +63,7 @@ trait LaravelControllerTrait
 
         // Run $this->_authorize() method if defined in controller
         // and return result if not null
-        $auth_return = $this->__callAuthorize($request, $operation, $instance);
+        $auth_return = $this->__callAuthorize($operation, $instance);
         if (!is_null($auth_return)) {
             return $auth_return;
         }
@@ -122,6 +122,10 @@ trait LaravelControllerTrait
         }
 
         $parentModel = $this->_model::findOrFail(intval($id));
+
+        // Run $this->_authorize() method if defined in parent controller
+        $this->__callAuthorize("get", $parentModel);
+
         $modelObj = $parentModel->$relationModel();
         $operation = 'create';
         $childModel = null;
@@ -137,7 +141,7 @@ trait LaravelControllerTrait
 
         // Run $this->_{relationship_method}_authorize() method if defined in controller
         // and return result if not null
-        $this->__callAuthorize($request, $operation, $childModel, $relationModel);
+        $this->__callAuthorize($operation, $childModel, $relationModel);
         
         if ($data = $modelObj->$operation($cred)) {
             // $data = ($operation == 'create')? $data : $parentModel->$relationModel()->find($relationModelId);
@@ -180,7 +184,7 @@ trait LaravelControllerTrait
             $model = $this->_model;
             $instance = (new $model())->findOrFail($id);
 
-            $this->__callAuthorize($request, $operation, $instance);
+            $this->__callAuthorize($operation, $instance);
 
             $is_reach_max_attach_limit = $this->__reachedMaxAttachLimit($instance, $relationship);
 
@@ -278,28 +282,33 @@ trait LaravelControllerTrait
 
     public function get (Request $request, $id, $relationModel=null, $relationModelId=null)
     {
-        $modelObj = $this->_model::find($id);
-        
-        if (is_null($modelObj)) return null;
-        
         $loadModelQueryString = $request->get('load_models');
+        $where = $request->get('filters');
         $valideRelationModels = $this->_getRelationModels($relationModel);
+        $modelObj = null;
+        
+        if (!is_null($relationModel)) {
+            $modelObj = $this->_model::findOrFail(intval($id));
+        } else {
+            $modelObj = $this->_model::find(intval($id));
+            if (is_null($modelObj)) return null;
+        }
 
         if (!is_null($relationModel)) {
             if(! in_array($relationModel, $this->_getRelationModels()) ) {
                 return abort(404, "Not found");
             }
 
-            $modelObj = $modelObj->$relationModel;
-
             if (!is_null($relationModelId)) {
-                $modelObj = $modelObj->find($relationModelId);
+                $modelObj = $modelObj->$relationModel->find($relationModelId);
                 if (is_null($modelObj)) return abort(404, "Not found");
+            } else {
+                $modelObj = $modelObj->$relationModel()->first();
             }
 
         }
 
-            $this->__callAuthorize($request, 'get', $modelObj, $relationModel);
+        $this->__callAuthorize('get', $modelObj, $relationModel);
 
         if (!is_null($loadModelQueryString) && !empty($valideRelationModels)) {
             $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $loadModelQueryString);
@@ -319,10 +328,10 @@ trait LaravelControllerTrait
         return $this->__makeResource('get', $modelObj, $relationModel, $relationModelId);
     }
 
-    public function fetch (Request $request)
+    public function fetch (Request $request, $id = null, $relationModel=null)
     {
         
-        $this->__callAuthorize($request, "fetch");
+        $this->__callAuthorize("fetch");
 
         $returnCount = $request->get('count', false);
         $sort = $request->get('sort');
@@ -330,14 +339,27 @@ trait LaravelControllerTrait
         $fields = $request->get('fields', []);
         $relationshipQueryString = $request->get('with');
         $countRelationship = $request->get("count_with", false);
+        $getFirst = $request->get("get_first", false);
         $paginate = $request->get('paginate');
         $limit = $request->get('limit');
         $offset = $request->get('offset');
 
         $valideRelationModels = $this->_getRelationModels();
+        $sortColumns = $this->_getSortColumns($relationModel);
 
         $model = $this->_model;
-        $instance = new $model(); 
+        $instance = new $model();
+
+        if (!is_null($id) && is_numeric($id) && !is_null($relationModel)) {
+            if (!in_array($relationModel, $valideRelationModels)) {
+                return abort(404, message: "$relationModel relation model not defined.");
+            }
+            $valideRelationModels = $this->_getRelationModels($relationModel);
+
+            $instance = $instance->findOrFail(intval($id));
+
+            $instance = $instance->$relationModel();
+        }
 
         if ($where && is_string($where)) {
             $where_decode = json_decode($where, true);
@@ -353,17 +375,27 @@ trait LaravelControllerTrait
             // in the $validateRelationModels
             $withModels = array_intersect($loadModelQueryStringArr, $valideRelationModels);
             $withMethod = ($countRelationship) ? "withCount" : "with";
-            $instance = $instance->$withMethod(...$withModels);
+            $instance = $instance->$withMethod($withModels);
         }
 
-        if ($sort) {
+        if ($getFirst == true) {
+            $result = $instance->first();
+            $this->__callAuthorize('get', $result, $relationModel);
+            return $this->__makeResource('fetch', $result, $relationModel);
+        }
+
+        // Sorting the query result
+        if ($sort && !empty($sortColumns)) {
             if (is_array($sort) && (count($sort) == 2)) {
-               $instance = $instance->orderBy($sort[0], $sort[1]);
+                if (in_array($sort[0], $sortColumns))
+                    $instance = $instance->orderBy($sort[0], $sort[1]);
             } elseif (is_string($sort)) {
-                $instance = $instance->latest($sort);
+                if (in_array($sort, $sortColumns))
+                    $instance = $instance->latest($sort);
             }
         }
         
+        // Limiting the query result
         if (is_numeric($limit)) {
             $instance = $instance->limit((int) $limit);
         }
@@ -388,7 +420,7 @@ trait LaravelControllerTrait
             }
         }
 
-        return $this->__makeResource('fetch', $results);
+        return $this->__makeResource('fetch', $results, $relationModel);
     }
     
     public function destroy (Request $request, $id)
@@ -427,7 +459,7 @@ trait LaravelControllerTrait
 
         // Run $this->_authorize() method if defined in controller
         // and return result if not null
-        $auth_return = $this->__callAuthorize($request, $operation, $id);
+        $auth_return = $this->__callAuthorize($operation, $id);
         if (!is_null($auth_return)) {
             return $auth_return;
         }
@@ -451,11 +483,16 @@ trait LaravelControllerTrait
         }
     }
 
-    private function __getWhereClause($where) 
+    private function __getWhereClause($where, $relationModel=null) 
     {
-        if (isset($this->_result_filters)) { // Checks if _result_filters is set in the parent controller
+        $filterVar = "_result_filters";
+        if (!is_null($relationModel)) {
+            $filterVar = "_{$relationModel}{$filterVar}";
+        }
+
+        if (isset($this->$filterVar)) { // Checks if _result_filters is set in the parent controller
             if (is_array($where) && Arr::isAssoc($where) && !HelpersArr::hasEmptyMulti($where)) { // Checks if $where is an array and associative array
-                $filters = $this->_result_filters;
+                $filters = $this->$filterVar;
                 $query_filter = array_intersect_key($where, $filters);
                 $where_clauses = Arr::map($query_filter, function($value, string $key) use($filters) {
                     $operator = $filters[$key];
@@ -479,6 +516,22 @@ trait LaravelControllerTrait
         $relation_model_property = "_relation_models";
         if (!is_null($relationship)) {
             $relation_model_property = "_{$relationship}_relation_models";
+        }
+        
+        if (isset($this->$relation_model_property)) {
+            return $this->$relation_model_property;
+        }
+        return [];
+    }
+
+    /**
+     * Gets user pre-defined Columns to use for ordering
+     */
+    protected function _getSortColumns($relationship=null)
+    {
+        $relation_model_property = "_sort_columns";
+        if (!is_null($relationship)) {
+            $relation_model_property = "_{$relationship}_sort_columns";
         }
         
         if (isset($this->$relation_model_property)) {
@@ -602,11 +655,11 @@ trait LaravelControllerTrait
      * 
      * @return 
      */
-    private function __callAuthorize (Request $request, $operation, $model=null, $relationship=null) 
+    private function __callAuthorize ($operation, $model=null, $relationship=null) 
     {
         $method = (!is_null($relationship))? "_{$relationship}_authorize" : '_authorize';
         if (method_exists($this, $method)) {
-            return $this->$method($request, $operation, $model);
+            return $this->$method($operation, $model);
         }
     }
 
