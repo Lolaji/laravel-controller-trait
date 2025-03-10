@@ -18,6 +18,7 @@ trait LaravelControllerTrait
 
     private $__validate_rules = [];
     private $__validate_message = [];
+    private $__hook_data = null;
 
     protected $_run_form_validation = true; //Determin whether to run form validation
 
@@ -73,7 +74,7 @@ trait LaravelControllerTrait
         
         if ($data = $instance->$operation($cred)) {
             $data = ($operation == 'create')? $data : $model::find($id);
-            $call_hook_return_data = $this->__callHook($request, $data, "{$operation}d");
+            $this->__callHook($request, $data, "{$operation}d");
 
             $response['success'] = true;
             $response['operation'] = $operation;
@@ -82,8 +83,8 @@ trait LaravelControllerTrait
 
             // append data return from $this->_hook() method in the controller
             // to $response variable if not null
-            if (! is_null($call_hook_return_data))
-                $response['hook'] = $call_hook_return_data;
+            if (! is_null($this->__hook_data))
+                $response['hook'] = $this->__hook_data;
         } else {
             $response['success'] = false;
             $response['message'] = "Unable to {$operation} due to system error. Please try again.";
@@ -93,6 +94,8 @@ trait LaravelControllerTrait
 
     public function upsertByForeign (Request $request, $id, $relationModel, $relationModelId=null)
     {
+        $parentModel = $this->_model::findOrFail(intval($id));
+
         $response = ['success'=>false, 'message'=>[]];
 
         // Run $this->_before_validate() method if exist
@@ -104,7 +107,11 @@ trait LaravelControllerTrait
         }
 
         if ($this->_run_form_validation) {
-            if ($this->__validate($request, $relationModel)){
+            if ($this->__validate(
+                request: $request, 
+                relationModelName: $relationModel, 
+                parentModel: $parentModel
+            )) {
                 return $this->getResponse();
             }
         }
@@ -120,8 +127,6 @@ trait LaravelControllerTrait
                 status: 405
             );
         }
-
-        $parentModel = $this->_model::findOrFail(intval($id));
 
         // Run $this->_authorize() method if defined in parent controller
         $this->__callAuthorize("get", $parentModel);
@@ -153,7 +158,7 @@ trait LaravelControllerTrait
                 }
             }
 
-            $call_hook_return_data = $this->__callHook($request, $data, "{$operation}d", true, $relationModel);
+            $this->__callHook($request, $data, "{$operation}d", true, $relationModel);
             $response['success'] = true;
             $response['data'] = $this->__makeResource("upsert", $data, $relationModel);
             $response['operation'] = $operation;
@@ -161,8 +166,8 @@ trait LaravelControllerTrait
 
             // append data return from $this->_hook() method in the controller
             // to $response variable if not null
-            if (! is_null($call_hook_return_data))
-                $response['hook'] = $call_hook_return_data;
+            if (! is_null($this->__hook_data))
+                $response['hook'] = $this->__hook_data;
         } else {
             $response['success'] = true;
             $response['message'] = "Unable to $operation $relationModel due to system error. Please try again.";
@@ -211,7 +216,7 @@ trait LaravelControllerTrait
 
                     // if ($data) {
                         
-                        $call_hook_return_data = $this->__callHook(
+                        $this->__callHook(
                             $request, 
                             ['instance'=>$instance, 'relationship'=> $relationship, 'data'=>$data], 
                             "{$operation}"
@@ -224,8 +229,8 @@ trait LaravelControllerTrait
 
                         // append data return from $this->_hook() method in the controller
                         // to $response variable if not null and empty
-                        if (!is_null($call_hook_return_data) && !empty($call_hook_return_data))
-                            $response['hook'] = $call_hook_return_data;
+                        if (!is_null($this->__hook_data) || !empty($this->__hook_data))
+                            $response['hook'] = $this->__hook_data;
                     // } else {
                     //     $response['success'] = false;
                     //     $response['message'] = "Unable to {$operation} due to system error.";
@@ -490,7 +495,7 @@ trait LaravelControllerTrait
             $filterVar = "_{$relationModel}{$filterVar}";
         }
 
-        if (isset($this->$filterVar)) { // Checks if _result_filters is set in the parent controller
+        if (isset($this->$filterVar)) { // Checks if _result_filters or _{relation}_result_filters is set in the parent controller
             if (is_array($where) && Arr::isAssoc($where) && !HelpersArr::hasEmptyMulti($where)) { // Checks if $where is an array and associative array
                 $filters = $this->$filterVar;
                 $query_filter = array_intersect_key($where, $filters);
@@ -569,7 +574,7 @@ trait LaravelControllerTrait
         $this->__validate_rules = $validate_rules;
     }
 
-    private function __validate (Request $request, $relationModelName=null)
+    private function __validate (Request $request, $relationModelName=null, $parentModel=null)
     {
         $response = ['success'=>false, 'message'=>[]];
 
@@ -603,7 +608,7 @@ trait LaravelControllerTrait
             if ((int) method_exists($this, $method)){
 
                 if ((int) method_exists($this, $message_method)) {
-                    $validate_message = $this->$message_method();
+                    $validate_message = $this->$message_method($parentModel);
                 }
                 
                 return $validatation($this->$method(), $validate_message);
@@ -638,10 +643,9 @@ trait LaravelControllerTrait
     {
         $method = ($is_relational)? "_{$relationModelName}_hook" : "_hook";
         if ( (int) method_exists($this, $method) ) {
-            return $this->$method($request, $model, $flag);
+            $this->__hook_data = $this->$method($request, $model, $flag);
             // return call_user_func_array([$this, $method], [$request, $model, $flag]);
         }
-        return null;
     }
 
     /**
