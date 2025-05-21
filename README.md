@@ -42,19 +42,30 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
         protected $_relation_models = ["profile", "posts"];
         protected $_fillable = ["username", "email"];
 
+        protected $_profile_fillable = ["firstname", "lastname", "date_of_birth"];
+
         protected $_result_filters = [
             "active" => "=",
             "status" => "="
+            ...
         ];
 
         protected function _validate_rules()
         {
             return [
-                "name" => ['required', 'string'],
+                "username" => ['required', 'string'],
+                "email" => ['required', 'string'],
+                ...
             ];
         }
 
-        protected _hook($request, $model_result, $operation)
+        // if you would like to serialize the fillable data
+        protected function _serialze_input(array $input): array
+        {
+            return $input;
+        }
+
+        protected _hook(Request $request, $model_result, $operation)
         {
             switch($opertion) {
                 case 'created':
@@ -93,6 +104,27 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
                         // Code here execute after user is destroy
                     break;
             }
+        }
+
+        // Define the validation rule for the relationship profile
+        protected function _validate_profile_rule(): array
+        {
+            return [
+                "firstname" => ["string", "max:20"],
+                ...
+            ];
+        }
+
+        // if you would like to serialize the profile relationship fillable data
+        protected function _serialze_profile_input(array $input): array
+        {
+            return $input;
+        }
+
+        // Define the relationship "profile" hook
+        protected function _profile_hook(Request $request, $model, $operation)
+        {
+            // Perform code execution like in _hook method
         }
     }
 
