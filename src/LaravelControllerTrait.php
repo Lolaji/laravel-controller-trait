@@ -26,6 +26,7 @@ trait LaravelControllerTrait
 
     public function upsert (Request $request, $id = null) 
     {
+
         $response = ['success'=>false, 'data'=>null, 'message'=>[]];
 
         // Run $this->_enter() method if exist
@@ -94,6 +95,10 @@ trait LaravelControllerTrait
 
     public function upsertByForeign (Request $request, $id, $relationModel, $relationModelId=null)
     {
+        // Check if the relation model is decleared in the _relation_models array
+        // and return 404 if not in the array
+        $this->_abortIfRelationNotExist($relationModel);
+
         $parentModel = $this->_model::findOrFail(intval($id));
 
         $response = ['success'=>false, 'message'=>[]];
@@ -178,6 +183,10 @@ trait LaravelControllerTrait
 
     public function deattach (Request $request, $id, $relationship, $relationship_id=null)
     {
+        // Abort if relation model is not null and is not defined 
+        // in the parent controller
+        $this->_abortIfRelationNotExist($relationship);
+
         $response = ['success' => false, 'message'=>''];
         $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot', 'syncWithPivotValues'];
 
@@ -287,9 +296,12 @@ trait LaravelControllerTrait
 
     public function get (Request $request, $id, $relationModel=null, $relationModelId=null)
     {
-        $loadModelQueryString = $request->get('load_models');
-        $where = $request->get('filters');
-        $valideRelationModels = $this->_getRelationModels($relationModel);
+        // Abort if relation model is not null and is not defined 
+        // in the parent controller
+        $this->_abortIfRelationNotExist($relationModel);
+
+        $loadModelQueryString = $request->get('with');
+        $countRelationship = $request->get('count_with', false);
         $modelObj = null;
         
         if (!is_null($relationModel)) {
@@ -300,10 +312,6 @@ trait LaravelControllerTrait
         }
 
         if (!is_null($relationModel)) {
-            if(! in_array($relationModel, $this->_getRelationModels()) ) {
-                return abort(404, "Not found");
-            }
-
             if (!is_null($relationModelId)) {
                 $modelObj = $modelObj->$relationModel->find($relationModelId);
                 if (is_null($modelObj)) return abort(404, "Not found");
@@ -315,28 +323,26 @@ trait LaravelControllerTrait
 
         $this->__callAuthorize('get', $modelObj, $relationModel);
 
-        if (!is_null($loadModelQueryString) && !empty($valideRelationModels)) {
-            $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $loadModelQueryString);
-            
-            // remove all the elements in $loadModelQueryStringArr that do not exist 
-            // in the $validateRelationModels
-            $loadModel = array_intersect($loadModelQueryStringArr, $valideRelationModels);
-        }
+        $loadModels = $this->_getExistingRelationsFromQueryString($loadModelQueryString, $relationModel);
 
-        if (!empty($loadModel)) {
-            $modelObj = $modelObj->load($loadModel);
+        if (!empty($loadModels)) {
+            $loadMethod = ($countRelationship == true) ? "loadCount" : "load";
+            $modelObj = $modelObj->$loadMethod($loadModels);
         }
 
         //call the $this->_resource() method if defined in the controller.
         //and return the data if not null
-
         return $this->__makeResource('get', $modelObj, $relationModel, $relationModelId);
     }
 
     public function fetch (Request $request, $id = null, $relationModel=null)
     {
-        
-        $this->__callAuthorize("fetch");
+        // Abort If relation model is not null and not defined in the parent controller
+        $this->_abortIfRelationNotExist($relationModel);
+
+        if (is_null($id)) {
+            $this->__callAuthorize("fetch");    
+        }
 
         $returnCount = $request->get('count', false);
         $sort = $request->get('sort');
@@ -356,29 +362,32 @@ trait LaravelControllerTrait
         $instance = new $model();
 
         if (!is_null($id) && is_numeric($id) && !is_null($relationModel)) {
-            if (!in_array($relationModel, $valideRelationModels)) {
-                return abort(404, message: "$relationModel relation model not defined.");
-            }
             $valideRelationModels = $this->_getRelationModels($relationModel);
 
             $instance = $instance->findOrFail(intval($id));
+
+            // Call _authorize() method in the parent model controller
+            $this->__callAuthorize("get", $instance);
 
             $instance = $instance->$relationModel();
         }
 
         if ($where && is_string($where)) {
             $where_decode = json_decode($where, true);
-            $where_clauses = $this->__getWhereClause($where_decode);
-            if (!empty($where_clauses))
-                $instance = $instance->where($where_clauses);
+            $clause = $this->__getWhereClause($where_decode);
+            if (isset($clause["where"]) && !empty($clause["where"])) {
+                $instance = $instance->where($clause["where"]);
+            } 
+
+            if (isset($clause["wherePivot"]) && !empty($clause["wherePivot"])) {
+                foreach($clause["wherePivot"] as $key => $value) {
+                    $instance = $instance->wherePivot($value[0], $value[2]);
+                }
+            }
         }
 
-        if (!is_null($relationshipQueryString) && !empty($valideRelationModels)) {
-            $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $relationshipQueryString);
-            
-            // remove all the elements in $loadModelQueryStringArr that do not exist 
-            // in the $validateRelationModels
-            $withModels = array_intersect($loadModelQueryStringArr, $valideRelationModels);
+        $withModels = $this->_getExistingRelationsFromQueryString($relationshipQueryString, $relationModel);
+        if(!empty($withModels)) {
             $withMethod = ($countRelationship) ? "withCount" : "with";
             $instance = $instance->$withMethod($withModels);
         }
@@ -499,15 +508,26 @@ trait LaravelControllerTrait
             if (is_array($where) && Arr::isAssoc($where) && !HelpersArr::hasEmptyMulti($where)) { // Checks if $where is an array and associative array
                 $filters = $this->$filterVar;
                 $query_filter = array_intersect_key($where, $filters);
-                $where_clauses = Arr::map($query_filter, function($value, string $key) use($filters) {
+                $clauses = ["where" => [], "wherePivot" => []];
+                Arr::map($query_filter, function($value, string $key) use($filters, &$clauses) {
                     $operator = $filters[$key];
                     $field = $key;
+                    $isPivot = false;
                     if (strpos($key, "__") !== false) {
-                        $field = explode("__", $key)[0];
+                        $arr = explode("__", $key);
+                        $field = $arr[0];
+                        if (in_array("pivot", $arr)) {
+                            $isPivot = true;
+                        }
                     }
-                    return [$field, $operator, $value];
+                    if ($isPivot) {
+                        array_push($clauses["wherePivot"], [$field, $operator, $value]);
+                    } else {
+                        array_push($clauses["where"], [$field, $operator, $value]);
+                    }
+                    // return [$field, $operator, $value];
                 });
-                return array_values($where_clauses);
+                return $clauses;
             }
         }
         return [];
@@ -525,6 +545,41 @@ trait LaravelControllerTrait
         
         if (isset($this->$relation_model_property)) {
             return $this->$relation_model_property;
+        }
+        return [];
+    }
+
+    protected function _abortIfRelationNotExist($relationModelName=null)
+    {
+        $validRelationModels = $this->_getRelationModels();
+
+        if (!is_null($relationModelName) && !in_array($relationModelName, $validRelationModels)) {
+            $route = request()->path();
+            return abort(404, "The route $route is not found.");
+        } 
+    }
+
+    /*
+     |------------------------------------------------
+     | Get Exist Relation From Query String
+     |------------------------------------------------
+     |
+     | Remove all the relation models that are included in the
+     | query string, however, not decleared in the controller
+     | and return the ones that are decleared in the controller
+     | if they are included in the query string.
+     */
+    protected function _getExistingRelationsFromQueryString($queryString=null, $relationModel=null)
+    {
+        $declearedEelationModels = $this->_getRelationModels($relationModel);
+
+        if (!is_null($queryString) && !empty($declearedEelationModels)) {
+            $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $queryString);
+            
+            // remove all the elements in $loadModelQueryStringArr that do not exist 
+            // in the $validateRelationModels
+            $models = array_intersect($loadModelQueryStringArr, $declearedEelationModels);
+            return array_values($models);
         }
         return [];
     }
@@ -611,7 +666,7 @@ trait LaravelControllerTrait
                     $validate_message = $this->$message_method($parentModel);
                 }
                 
-                return $validatation($this->$method(), $validate_message);
+                return $validatation($this->$method($parentModel), $validate_message);
             }
         }
     }
@@ -619,9 +674,18 @@ trait LaravelControllerTrait
     private function __getRequestData(Request $request, $is_relational=false, $relationModelName="")
     {
         $property = ($is_relational)? "_{$relationModelName}_fillable" : "_fillable";
+        $serializerMethod = $is_relational? "_serialize_{$relationModelName}_input" : "_serialize_input";
         
         if (isset($this->$property) && !empty($this->$property)) {
-            return $request->only($this->$property);
+            $cred = $request->only($this->$property);
+            if (method_exists($this, $serializerMethod)) {
+                $serializeInput = $this->$serializerMethod($cred);
+                if (!is_null($serializeInput) && !empty($serializeInput)) {
+                    return $serializeInput;
+                }
+                return $cred;
+            }
+            return $cred;
         }
         return [];
     }
@@ -720,9 +784,9 @@ trait LaravelControllerTrait
      */
     private function __reachedMaxAttachLimit($instance, $relationship)
     {
-        $property = "_{$relationship}_attach_limit";
-        if (isset($this->$property)) {
-            return count($instance->$relationship) == $this->$property;
+        $property = "_relation_attach_limit";
+        if (isset($this->$property) && isset($this->$property[$relationship])) {
+            return count($instance->$relationship) >= $this->$property[$relationship];
         }
         return false;
     }
