@@ -1,13 +1,17 @@
 <?php
 namespace Lolaji\LaravelControllerTrait;
 
+use Carbon\Carbon;
 use Exception;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Lolaji\LaravelControllerTrait\Helpers\Arr as HelpersArr;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
 use Lolaji\LaravelControllerTrait\Enum\DeattachMethodEnum;
 use Lolaji\LaravelControllerTrait\Exceptions\RequestMethodException;
+use Lolaji\LaravelControllerTrait\Filters\MorphFilter;
 use Lolaji\LaravelControllerTrait\Helpers\Str;
 
 trait LaravelControllerTrait 
@@ -37,6 +41,21 @@ trait LaravelControllerTrait
             }
         }
 
+        $model = $this->_model;
+        $instance = new $model();
+        $operation = "create";
+        if (!is_null($id)){
+            $operation = "update";
+            $instance = $instance->findOrFail(intval($id));
+        }
+
+        // Run $this->_authorize() method if defined in controller
+        // and return result if not null
+        $auth_return = $this->__callAuthorize($operation, $instance);
+        if (!is_null($auth_return)) {
+            return $auth_return;
+        }
+
         if ($this->_run_form_validation) {
             if ($this->__validate($request)){
                 return $this->getResponse();
@@ -53,21 +72,6 @@ trait LaravelControllerTrait
                 content: "Not Allowed: Credential Error.",
                 status: 405
             );
-        }
-
-        $model = $this->_model;
-        $instance = new $model();
-        $operation = "create";
-        if (!is_null($id)){
-            $operation = "update";
-            $instance = $instance->findOrFail(intval($id));
-        }
-
-        // Run $this->_authorize() method if defined in controller
-        // and return result if not null
-        $auth_return = $this->__callAuthorize($operation, $instance);
-        if (!is_null($auth_return)) {
-            return $auth_return;
         }
         
 
@@ -352,6 +356,7 @@ trait LaravelControllerTrait
         $countRelationship = $request->get("count_with", false);
         $getFirst = $request->get("get_first", false);
         $paginate = $request->get('paginate');
+        $page = $request->get("page", 1);
         $limit = $request->get('limit');
         $offset = $request->get('offset');
 
@@ -362,7 +367,7 @@ trait LaravelControllerTrait
         $instance = new $model();
 
         if (!is_null($id) && is_numeric($id) && !is_null($relationModel)) {
-            $valideRelationModels = $this->_getRelationModels($relationModel);
+            // $valideRelationModels = $this->_getRelationModels($relationModel);
 
             $instance = $instance->findOrFail(intval($id));
 
@@ -372,9 +377,10 @@ trait LaravelControllerTrait
             $instance = $instance->$relationModel();
         }
 
+        // Where Clause
         if ($where && is_string($where)) {
             $where_decode = json_decode($where, true);
-            $clause = $this->__getWhereClause($where_decode);
+            $clause = $this->__getWhereClause($where_decode, $relationModel);
             if (isset($clause["where"]) && !empty($clause["where"])) {
                 $instance = $instance->where($clause["where"]);
             } 
@@ -384,6 +390,26 @@ trait LaravelControllerTrait
                     $instance = $instance->wherePivot($value[0], $value[2]);
                 }
             }
+
+            if (isset($clause["whereMorph"]) && !empty($clause["whereMorph"])) {
+                $columns = [];
+                foreach ($clause["whereMorph"] as $key => $val) {
+                    $instance = $instance->whereHasMorph($val->morphName, $val->type, function(Builder $query, string $type) use ($val, &$columns) {
+                        $column = $val->getColumn($type);
+                        array_push($columns, $column);
+                        if (isset($val->relation) && !is_null($val->relation)) {
+                            $query->whereRelation($val->relation, $column, $val->operator, $val->getValue());
+                        } else {
+                            $query->where($column, $val->operator, $val->getValue());
+                        }
+                    });
+                }
+                return $columns;
+            }
+
+            // Call the _filter or _{relationship}_filter method
+            // if defined in the controller.
+            $instance = $this->__callFilterHook("fetch", $instance, $relationModel);
         }
 
         $withModels = $this->_getExistingRelationsFromQueryString($relationshipQueryString, $relationModel);
@@ -400,12 +426,15 @@ trait LaravelControllerTrait
 
         // Sorting the query result
         if ($sort && !empty($sortColumns)) {
-            if (is_array($sort) && (count($sort) == 2)) {
-                if (in_array($sort[0], $sortColumns))
-                    $instance = $instance->orderBy($sort[0], $sort[1]);
-            } elseif (is_string($sort)) {
-                if (in_array($sort, $sortColumns))
-                    $instance = $instance->latest($sort);
+            $sortArr = explode(":", $sort);
+            $sortLen = count($sortArr);
+            
+            if (is_array($sortArr) && $sortLen > 0 && in_array($sortArr[0], $sortColumns)) {
+                if ($sortLen == 2 && in_array($sortArr[1], ["asc", "desc"])) {
+                    $instance = $instance->orderBy($sortArr[0], $sortArr[1]);
+                } else {
+                    $instance = $instance->latest($sortArr[0]);
+                }
             }
         }
         
@@ -423,9 +452,9 @@ trait LaravelControllerTrait
         }
 
         if ( !is_null( $this->_getPaginate() ) ) {
-            $results = $instance->paginate( $this->_getPaginate() );
+            $results = $instance->paginate( $this->_getPaginate(), ["*"], "page", (int) $page );
         } else if( !is_null($paginate) && is_numeric($paginate) ) {
-            $results = $instance->paginate((int) $paginate);
+            $results = $instance->paginate((int) $paginate, ["*"], "page", (int) $page);
         } else {
             if ($returnCount) {
                 $results = $instance->count();
@@ -504,28 +533,37 @@ trait LaravelControllerTrait
             $filterVar = "_{$relationModel}{$filterVar}";
         }
 
-        if (isset($this->$filterVar)) { // Checks if _result_filters or _{relation}_result_filters is set in the parent controller
+        if (isset($this->$filterVar) || method_exists($this, $filterVar)) { // Checks if _result_filters or _{relation}_result_filters is set in the parent controller
             if (is_array($where) && Arr::isAssoc($where) && !HelpersArr::hasEmptyMulti($where)) { // Checks if $where is an array and associative array
-                $filters = $this->$filterVar;
+                $filters = $this?->$filterVar ?? $this->$filterVar(); // Get the property first and if not defined, gets the method.
                 $query_filter = array_intersect_key($where, $filters);
-                $clauses = ["where" => [], "wherePivot" => []];
+                $clauses = ["where" => [], "wherePivot" => [], "whereMorph" => []];
                 Arr::map($query_filter, function($value, string $key) use($filters, &$clauses) {
                     $operator = $filters[$key];
                     $field = $key;
                     $isPivot = false;
-                    if (strpos($key, "__") !== false) {
-                        $arr = explode("__", $key);
-                        $field = $arr[0];
-                        if (in_array("pivot", $arr)) {
-                            $isPivot = true;
+
+                    if ($operator instanceof MorphFilter) {
+                        $operator->setValue($value);
+                        array_push($clauses["whereMorph"], $operator);
+                    } else {
+                        if (strpos($key, "__") !== false) {
+                            $arr = explode("__", $key);
+                            $field = $arr[0];
+                            if (in_array("pivot", $arr)) {
+                                $isPivot = true;
+                            }
+                        }
+
+                        $val = $operator == "like"? "%$value%" : $value;
+
+                        if ($isPivot) {
+                            array_push($clauses["wherePivot"], [$field, $operator, $val]);
+                        } else {
+                            array_push($clauses["where"], [$field, $operator, $val]);
                         }
                     }
-                    if ($isPivot) {
-                        array_push($clauses["wherePivot"], [$field, $operator, $value]);
-                    } else {
-                        array_push($clauses["where"], [$field, $operator, $value]);
-                    }
-                    // return [$field, $operator, $value];
+
                 });
                 return $clauses;
             }
@@ -710,6 +748,24 @@ trait LaravelControllerTrait
             $this->__hook_data = $this->$method($request, $model, $flag);
             // return call_user_func_array([$this, $method], [$request, $model, $flag]);
         }
+    }
+
+    private function __callFilterHook ($method, $instance, $relationModel=null)
+    {
+        $method = "_filter";
+        if (!is_null ($relationModel)) {
+            $method = "_{$relationModel}{$method}";
+        }
+
+        if (method_exists($this, $method)) {
+            $inst = $this->$method("fetch", $instance);
+            if (!is_null($inst)) {
+                return $inst;
+            } else {
+                return $instance;
+            }
+        }
+        return $instance;
     }
 
     /**
