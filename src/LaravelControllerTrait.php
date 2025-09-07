@@ -5,6 +5,7 @@ use Carbon\Carbon;
 use Exception;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Lolaji\LaravelControllerTrait\Helpers\Arr as HelpersArr;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -373,6 +374,14 @@ trait LaravelControllerTrait
 
             // Call _authorize() method in the parent model controller
             $this->__callAuthorize("get", $instance);
+
+            
+            if ($instance->$relationModel() instanceof HasOne) {
+                return $this->__makeResource(
+                    method: "get",
+                    results: $instance->$relationModel,
+                );
+            }
 
             $instance = $instance->$relationModel();
         }
