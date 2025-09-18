@@ -63,6 +63,11 @@ trait LaravelControllerTrait
             }
         }
 
+        $preExe = $this->__callPreExecute($operation, $instance);
+        if (!is_null($preExe)) {
+            return $preExe;
+        }
+
         $cred = $this->__getRequestData($request);
 
         // return error if the $cred is empty.
@@ -116,6 +121,26 @@ trait LaravelControllerTrait
             }
         }
 
+        // Run $this->_authorize() method if defined in parent controller
+        $this->__callAuthorize("get", $parentModel);
+
+        $modelObj = $parentModel->$relationModel();
+        $operation = 'create';
+        $childModel = null;
+
+        if (!is_null($relationModelId)) {
+            $operation = 'update';
+            $childModel = $parentModel->$relationModel()->findOrFail(intval($relationModelId));
+        } else {
+            if (isset($parentModel->$relationModel->id)) {
+                $operation = 'update';
+            }
+        }
+
+        // Run $this->_{relationship_method}_authorize() method if defined in controller
+        // and return result if not null
+        $this->__callAuthorize($operation, $childModel, $relationModel);
+
         if ($this->_run_form_validation) {
             if ($this->__validate(
                 request: $request, 
@@ -124,6 +149,17 @@ trait LaravelControllerTrait
             )) {
                 return $this->getResponse();
             }
+        }
+
+        $preExe = $this->__callPreExecute(
+            operation: $operation, 
+            model: $childModel, 
+            relationModelName: $relationModel,
+            parentModel: $parentModel,
+        );
+
+        if (!is_null($preExe)) {
+            return $preExe;
         }
 
         $cred = $this->__getRequestData($request, true, $relationModel);
@@ -137,26 +173,6 @@ trait LaravelControllerTrait
                 status: 405
             );
         }
-
-        // Run $this->_authorize() method if defined in parent controller
-        $this->__callAuthorize("get", $parentModel);
-
-        $modelObj = $parentModel->$relationModel();
-        $operation = 'create';
-        $childModel = null;
-
-        if (!is_null($relationModelId)) {
-            $operation = 'update';
-            $childModel = $modelObj->findOrFail(intval($relationModelId));
-        } else {
-            if (isset($parentModel->$relationModel->id)) {
-                $operation = 'update';
-            }
-        }
-
-        // Run $this->_{relationship_method}_authorize() method if defined in controller
-        // and return result if not null
-        $this->__callAuthorize($operation, $childModel, $relationModel);
         
         if ($data = $modelObj->$operation($cred)) {
             // $data = ($operation == 'create')? $data : $parentModel->$relationModel()->find($relationModelId);
@@ -757,6 +773,27 @@ trait LaravelControllerTrait
             $this->__hook_data = $this->$method($request, $model, $flag);
             // return call_user_func_array([$this, $method], [$request, $model, $flag]);
         }
+    }
+
+    /**
+     * Call protected $this->_pre_execute() method
+     * defined in controller inheriting this trait
+     * before performing database operation
+     * 
+     * @param $operation database operation to be executed
+     * @param $model model class
+     * @param $relationModelName determine the relationship method name of the model perform database operation
+     * 
+     * @return void
+     */
+    private function __callPreExecute(string $operation, ?Model $model, ?string $relationModelName=null, ?Model $parentModel=null)
+    {
+        $childClassMethod = !is_null($relationModelName)? "_{$relationModelName}_pre_execute" : "_pre_execute";
+
+        if ((int) method_exists($this, $childClassMethod)) {
+            return $this->$childClassMethod($operation, $model, $parentModel);
+        }
+        return null;
     }
 
     private function __callFilterHook ($method, $instance, $relationModel=null)
