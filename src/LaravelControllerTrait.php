@@ -209,74 +209,77 @@ trait LaravelControllerTrait
         $this->_abortIfRelationNotExist($relationship);
 
         $response = ['success' => false, 'message'=>''];
-        $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot', 'syncWithPivotValues'];
+        // $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot', 'syncWithPivotValues'];
 
         // form input
         $operation = $request->post('operation');
         $value = $request->post('value');
 
-        if (in_array($operation, $operations)) {
-            $model = $this->_model;
-            $instance = (new $model())->findOrFail($id);
+        $this->_abortIfManyToManyOperationNotExist($operation, $relationship);
 
-            $this->__callAuthorize($operation, $instance);
+        // if (in_array($operation, $operations)) {
+        $model = $this->_model;
+        $instance = (new $model())->findOrFail($id);
 
-            $is_reach_max_attach_limit = $this->__reachedMaxAttachLimit($instance, $relationship);
+        $this->__callAuthorize($operation, $instance);
 
-            if ($value && (!empty($value) || !is_null($value))) {
-                if (!$is_reach_max_attach_limit || !is_null($relationship_id)) {
-                    $data = null;
-                    $res = null;
-                    if (in_array($relationship, $this->_getRelationModels())) {
-                        if (!is_null($relationship_id)) {
-                            $res = $instance->$relationship()->$operation($relationship_id, $value);
-                        } else {
-                            $res = $instance->$relationship()->$operation($value);
-                        }
-                    } else {
-                        return RequestMethodException::response(
-                            debug_message: "Deattach Method Error: \"{$relationship}\" model does not exist and/or is not decleared in the parent controller.",
-                            debug_status: 409,
-                            message: "Resource could not be found",
-                            status: 404
-                        );
-                    }
+        $is_reach_max_attach_limit = $this->__reachedMaxAttachLimit($instance, $relationship);
 
-                    $data = $this->_serializeDeattachReponse($operation, $value, $res);
+        if ($value && (!empty($value) || !is_null($value))) {
+            if (!$is_reach_max_attach_limit || !is_null($relationship_id)) {
+                $data = null;
+                $res = null;
 
-                    // if ($data) {
-                        
-                        $this->__callHook(
-                            $request, 
-                            ['instance'=>$instance, 'relationship'=> $relationship, 'data'=>$data], 
-                            "{$operation}"
-                        );
-
-                        $response['success'] = true;
-                        $response['operation'] = $operation;
-                        $response['data'] = $data;
-                        $response['message'] = "{$operation}ed";
-
-                        // append data return from $this->_hook() method in the controller
-                        // to $response variable if not null and empty
-                        if (!is_null($this->__hook_data) || !empty($this->__hook_data))
-                            $response['hook'] = $this->__hook_data;
-                    // } else {
-                    //     $response['success'] = false;
-                    //     $response['message'] = "Unable to {$operation} due to system error.";
-                    // }
+                // if (in_array($relationship, $this->_getRelationModels())) {
+                if (!is_null($relationship_id)) {
+                    $res = $instance->$relationship()->$operation($relationship_id, $value);
                 } else {
-                    $response['success'] = false;
-                    $response['message'] = !is_null($relationship_id)? "update-failed": "reached-maximum-attach-limit";
+                    $res = $instance->$relationship()->$operation($value);
                 }
+                // } else {
+                //     return RequestMethodException::response(
+                //         debug_message: "Deattach Method Error: \"{$relationship}\" model does not exist and/or is not decleared in the parent controller.",
+                //         debug_status: 409,
+                //         message: "Resource could not be found",
+                //         status: 404
+                //     );
+                // }
+
+                $data = $this->_serializeDeattachReponse($operation, $value, $res);
+
+                // if ($data) {
+                    
+                    $this->__callHook(
+                        $request, 
+                        ['instance'=>$instance, 'relationship'=> $relationship, 'data'=>$data], 
+                        "{$operation}"
+                    );
+
+                    $response['success'] = true;
+                    $response['operation'] = $operation;
+                    $response['data'] = $data;
+                    $response['message'] = "{$operation}ed";
+
+                    // append data return from $this->_hook() method in the controller
+                    // to $response variable if not null and empty
+                    if (!is_null($this->__hook_data) || !empty($this->__hook_data))
+                        $response['hook'] = $this->__hook_data;
+                // } else {
+                //     $response['success'] = false;
+                //     $response['message'] = "Unable to {$operation} due to system error.";
+                // }
             } else {
                 $response['success'] = false;
-                $response['message'] = 'empty-value';
+                $response['message'] = !is_null($relationship_id)? "update-failed": "reached-maximum-attach-limit";
             }
         } else {
             $response['success'] = false;
-            $response['message'] = 'invalid-operation-method';
+            $response['message'] = 'empty-value';
         }
+        // } else {
+        //     $response['success'] = false;
+        //     $response['message'] = 'invalid-operation-method';
+        // }
         return $response;
     }
 
@@ -383,9 +386,7 @@ trait LaravelControllerTrait
         $model = $this->_model;
         $instance = new $model();
 
-        if (!is_null($id) && is_numeric($id) && !is_null($relationModel)) {
-            // $valideRelationModels = $this->_getRelationModels($relationModel);
-
+        if (!is_null($id) && !is_null($relationModel)) {
             $instance = $instance->findOrFail(intval($id));
 
             // Call _authorize() method in the parent model controller
@@ -614,13 +615,46 @@ trait LaravelControllerTrait
 
     protected function _abortIfRelationNotExist($relationModelName=null)
     {
-        $validRelationModels = $this->_getRelationModels();
-
-        if (!is_null($relationModelName) && !in_array($relationModelName, $validRelationModels)) {
-            $route = request()->path();
-            return abort(404, "The route $route is not found.");
-        } 
+        if (!is_null($relationModelName)) {
+            $validRelationModels = $this->_getRelationModels();
+    
+            if (!in_array($relationModelName, $validRelationModels)) {
+                $route = request()->path();
+                return abort(404, "The route $route is not found.");
+            } 
+        }
     }
+
+    /*--------------------------------------------------------
+     |  Gets pre-defined many-to-many operations
+     |--------------------------------------------------------
+     |
+     |  Gets the allowed many-to-many methods decleared on
+     |  in the controller for the parent or relationship model
+     |
+     */
+
+     protected function _getManyToManyOperation($relationship=null)
+     {
+        $operation_property = "_deattach_methods";
+
+        if (isset($this->$operation_property[$relationship])) {
+            return $this->$operation_property[$relationship];
+        } else if (method_exists($this, $operation_property)) {
+            $method = $this->$operation_property();
+            return isset($method[$relationship]) ? $method[$relationship] : [];
+        }
+        return [];
+     }
+
+     protected function _abortIfManyToManyOperationNotExist($operation, $relationModelName=null)
+     {
+        $allowedOperations = $this->_getManyToManyOperation($relationModelName);
+
+        if (!in_array($operation, $allowedOperations)) {
+            abort(400, "Invalid operation Method: $operation could not be found.");
+        }
+     }
 
     /*
      |------------------------------------------------
@@ -628,7 +662,7 @@ trait LaravelControllerTrait
      |------------------------------------------------
      |
      | Remove all the relation models that are included in the
-     | query string, however, not decleared in the controller
+     | query string, that are not decleared in the controller
      | and return the ones that are decleared in the controller
      | if they are included in the query string.
      */
