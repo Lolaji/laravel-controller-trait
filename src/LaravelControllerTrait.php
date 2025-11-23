@@ -385,10 +385,11 @@ trait LaravelControllerTrait
 
         $model = $this->_model;
         $instance = new $model();
+        $parentModel = null;
 
         if (!is_null($id) && !is_null($relationModel)) {
             $instance = $instance->findOrFail(intval($id));
-
+            $parentModel = $instance;
             // Call _authorize() method in the parent model controller
             $this->__callAuthorize("get", $instance);
 
@@ -489,7 +490,12 @@ trait LaravelControllerTrait
             }
         }
 
-        return $this->__makeResource('fetch', $results, $relationModel);
+        return $this->__makeResource(
+            method: 'fetch', 
+            results: $results, 
+            relationModel: $relationModel,
+            parentModel: $parentModel,
+        );
     }
     
     public function destroy (Request $request, $id)
@@ -528,13 +534,10 @@ trait LaravelControllerTrait
 
         // Run $this->_authorize() method if defined in controller
         // and return result if not null
-        $auth_return = $this->__callAuthorize($operation, $id);
-        if (!is_null($auth_return)) {
-            return $auth_return;
-        }
+        $this->__callAuthorize($operation, $id);
 
         if ( $this->_model::destroy($id)) {
-            $this->__callHook($request, $id, 'destroyed');
+            $this->__callHook($request, $id, 'destroy');
             return 'true';
         }
         return 'false';
@@ -867,7 +870,7 @@ trait LaravelControllerTrait
         }
     }
 
-    private function __makeResource($method, $results, $relationModel=null, $relationModelId=null)
+    private function __makeResource($method, $results, $relationModel=null, $relationModelId=null, $parentModel=null)
     {
         $resource_method = "_resource";
         if (!is_null($relationModel)) {
@@ -875,7 +878,7 @@ trait LaravelControllerTrait
         }
 
         if (method_exists($this, $resource_method)) {
-            $resource = $this->$resource_method($method, $results, $relationModel, $relationModelId);
+            $resource = $this->$resource_method($method, $results, $relationModel, $relationModelId, $parentModel);
             if (!is_null($resource)) return $resource;
         }
 
