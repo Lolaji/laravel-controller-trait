@@ -1,8 +1,6 @@
 <?php
 namespace Lolaji\LaravelControllerTrait;
 
-use Carbon\Carbon;
-use Exception;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -10,45 +8,47 @@ use Lolaji\LaravelControllerTrait\Helpers\Arr as HelpersArr;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
-use Lolaji\LaravelControllerTrait\Enum\DeattachMethodEnum;
-use Lolaji\LaravelControllerTrait\Exceptions\RequestMethodException;
 use Lolaji\LaravelControllerTrait\Filters\MorphFilter;
 use Lolaji\LaravelControllerTrait\Helpers\Str;
 
 trait LaravelControllerTrait 
 {
-    private $__sorts = ['latest', 'oldest', 'inRandomOrder', 'reorder', 'orderBy'];
+    private array $__sorts = ['latest', 'oldest', 'inRandomOrder', 'reorder', 'orderBy'];
 
-    private $__response = [];
+    private array $__response = [];
 
-    private $__validate_rules = [];
-    private $__validate_message = [];
+    private array $__validate_rules = [];
+    private array $__validate_message = [];
     private $__hook_data = null;
 
-    protected $_run_form_validation = true; //Determin whether to run form validation
+    protected bool $_run_form_validation = true; //Determin whether to run form validation
 
-    protected $_return_data_in_enter = false;
+    protected bool $_return_data_in_enter = false;
 
-    public function upsert (Request $request, $id = null) 
+    public function upsert (Request $request, ?string $id = null) 
     {
+
+        $this->_checkOperationDisabled("upsert");
 
         $response = ['success'=>false, 'data'=>null, 'message'=>[]];
 
         // Run $this->_enter() method if exist
         if (method_exists($this, '_enter')) {
             $enter = $this->_enter('upsert', $request, $id);
-            if ($this->_return_data_in_enter) {
+            if (!is_null($enter)) {
                 return $enter;
             }
         }
 
-        $model = $this->_model;
+        $model = $this->__getModel();
         $instance = new $model();
         $operation = "create";
         if (!is_null($id)){
             $operation = "update";
             $instance = $instance->findOrFail(intval($id));
         }
+
+        $this->_checkOperationDisabled($operation);
 
         // Run $this->_authorize() method if defined in controller
         // and return result if not null
@@ -103,20 +103,21 @@ trait LaravelControllerTrait
         return $response;
     }
 
-    public function upsertByForeign (Request $request, $id, $relationModel, $relationModelId=null)
+    public function upsertByForeign (Request $request, string $id, string $relationModel, ?string $relationModelId=null)
     {
         // Check if the relation model is decleared in the _relation_models array
         // and return 404 if not in the array
         $this->_abortIfRelationNotExist($relationModel);
+        $this->_checkOperationDisabled("upsert", $relationModel);
 
-        $parentModel = $this->_model::findOrFail(intval($id));
+        $parentModel = $this->__getModel()::findOrFail(intval($id));
 
         $response = ['success'=>false, 'message'=>[]];
 
         // Run $this->_before_validate() method if exist
         if (method_exists($this, '_enter')) {
             $enter = $this->_enter('upsertByForeign', $request, $id, $relationModel, $relationModelId);
-            if ($this->_return_data_in_enter) {
+            if (!is_null($enter)) {
                 return $enter;
             }
         }
@@ -131,11 +132,15 @@ trait LaravelControllerTrait
         if (!is_null($relationModelId)) {
             $operation = 'update';
             $childModel = $parentModel->$relationModel()->findOrFail(intval($relationModelId));
+            $modelObj = $childModel;
         } else {
             if (isset($parentModel->$relationModel->id)) {
                 $operation = 'update';
+                $childModel = $parentModel->$relationModel;
             }
         }
+
+        $this->_checkOperationDisabled($operation, $relationModel);
 
         // Run $this->_{relationship_method}_authorize() method if defined in controller
         // and return result if not null
@@ -178,7 +183,7 @@ trait LaravelControllerTrait
             // $data = ($operation == 'create')? $data : $parentModel->$relationModel()->find($relationModelId);
             if ($operation != 'create') {
                 if(isset($parentModel->$relationModel->id)) {
-                    $data = $parentModel->$relationModel;
+                    $data = $parentModel->$relationModel()->first();
                 } else {
                     $data = $parentModel->$relationModel()->find($relationModelId);
                 }
@@ -202,11 +207,12 @@ trait LaravelControllerTrait
         return $response;
     }
 
-    public function deattach (Request $request, $id, $relationship, $relationship_id=null)
+    public function deattach (Request $request, string $id, string $relationship, ?string $relationship_id=null)
     {
         // Abort if relation model is not null and is not defined 
         // in the parent controller
         $this->_abortIfRelationNotExist($relationship);
+        $this->_checkOperationDisabled("deattach", $relationship);
 
         $response = ['success' => false, 'message'=>''];
         // $operations = ['detach', 'attach', 'sync', 'syncWithoutDetaching', 'updateExistingPivot', 'syncWithPivotValues'];
@@ -218,7 +224,7 @@ trait LaravelControllerTrait
         $this->_abortIfManyToManyOperationNotExist($operation, $relationship);
 
         // if (in_array($operation, $operations)) {
-        $model = $this->_model;
+        $model = $this->__getModel();
         $instance = (new $model())->findOrFail($id);
 
         $this->__callAuthorize($operation, $instance);
@@ -283,11 +289,11 @@ trait LaravelControllerTrait
         return $response;
     }
 
-    public function search(Request $request, $relationName=null)
+    public function search(Request $request, ?string $relationName=null)
     {
         $response = ['result' => []];
 
-        $class = $this->_model;
+        $class = $this->__getModel();
         $model = new $class();
 
         $term = $request->get('term', null);
@@ -318,20 +324,21 @@ trait LaravelControllerTrait
         return $response;
     }
 
-    public function get (Request $request, $id, $relationModel=null, $relationModelId=null)
+    public function get (Request $request, string $id, ?string $relationModel=null, ?string $relationModelId=null)
     {
         // Abort if relation model is not null and is not defined 
         // in the parent controller
         $this->_abortIfRelationNotExist($relationModel);
+        $this->_checkOperationDisabled("get", $relationModel);
 
         $loadModelQueryString = $request->get('with');
         $countRelationship = $request->get('count_with', false);
         $modelObj = null;
         
         if (!is_null($relationModel)) {
-            $modelObj = $this->_model::findOrFail(intval($id));
+            $modelObj = $this->__getModel()::findOrFail(intval($id));
         } else {
-            $modelObj = $this->_model::find(intval($id));
+            $modelObj = $this->__getModel()::find(intval($id));
             if (is_null($modelObj)) return null;
         }
 
@@ -359,13 +366,18 @@ trait LaravelControllerTrait
         return $this->__makeResource('get', $modelObj, $relationModel, $relationModelId);
     }
 
-    public function fetch (Request $request, $id = null, $relationModel=null)
+    public function fetch (Request $request, ?string $id = null, ?string $relationModel=null)
     {
         // Abort If relation model is not null and not defined in the parent controller
         $this->_abortIfRelationNotExist($relationModel);
+        $this->_checkOperationDisabled("fetch", $relationModel);
 
         if (is_null($id)) {
             $this->__callAuthorize("fetch");    
+        }
+
+        if (!is_null($id) && !is_null($relationModel)) {
+            $this->__callAuthorize("fetch", relationship: $relationModel);
         }
 
         $returnCount = $request->get('count', false);
@@ -383,7 +395,7 @@ trait LaravelControllerTrait
         $valideRelationModels = $this->_getRelationModels();
         $sortColumns = $this->_getSortColumns($relationModel);
 
-        $model = $this->_model;
+        $model = $this->__getModel();
         $instance = new $model();
         $parentModel = null;
 
@@ -392,7 +404,6 @@ trait LaravelControllerTrait
             $parentModel = $instance;
             // Call _authorize() method in the parent model controller
             $this->__callAuthorize("get", $instance);
-
             
             if ($instance->$relationModel() instanceof HasOne) {
                 return $this->__makeResource(
@@ -448,7 +459,7 @@ trait LaravelControllerTrait
         if ($getFirst == true) {
             $result = $instance->first();
             $this->__callAuthorize('get', $result, $relationModel);
-            return $this->__makeResource('fetch', $result, $relationModel);
+            return $this->__makeResource('get', $result, $relationModel);
         }
 
         // Sorting the query result
@@ -483,8 +494,8 @@ trait LaravelControllerTrait
         } else if( !is_null($paginate) && is_numeric($paginate) ) {
             $results = $instance->paginate((int) $paginate, ["*"], "page", (int) $page);
         } else {
-            if ($returnCount) {
-                $results = $instance->count();
+            if ($returnCount && $this->_canCountResult($relationModel)) {
+                return $instance->count();
             } else {
                 $results = $instance->get();
             }
@@ -498,8 +509,9 @@ trait LaravelControllerTrait
         );
     }
     
-    public function destroy (Request $request, $id)
+    public function destroy (Request $request, string $id)
     {
+        $this->_checkOperationDisabled("destroy");
         // validate id is number or commer-separated numbers
         if (!is_numeric($id)) {
             if (!Str::isCommerSeparatedNumbers($id)) {
@@ -525,6 +537,8 @@ trait LaravelControllerTrait
             $operation = 'deleteMany';
             $id = explode(',', $id);
         }
+
+        $this->_checkOperationDisabled($operation);
         
         $bd_hook = $this->__callHook($request, $id, 'beforeDestroyed');
 
@@ -536,14 +550,22 @@ trait LaravelControllerTrait
         // and return result if not null
         $this->__callAuthorize($operation, $id);
 
-        if ( $this->_model::destroy($id)) {
+        if ( $this->__getModel()::destroy($id)) {
             $this->__callHook($request, $id, 'destroy');
             return 'true';
         }
         return 'false';
     }
 
-    private function _serializeDeattachReponse($operation, $value, $res=null)
+    private function __getModel()
+    {
+        if (!property_exists($this, "_model")) {
+            throw new \Exception("_model property must be declared in the controller class.", code: 500);
+        }
+        return $this->_model;
+    }
+
+    private function _serializeDeattachReponse(string $operation, $value, $res=null)
     {
         switch($operation) {
             case "sync":
@@ -659,6 +681,21 @@ trait LaravelControllerTrait
         }
      }
 
+     protected function _checkOperationDisabled(string $operation, ?string $relationModelName=null)
+     {
+        $property = !is_null($relationModelName)? "_disable_{$relationModelName}_operations" : "_disable_operations";
+
+        if (property_exists($this, $property)) {
+            $disabledOperations = $this->$property;
+
+            if (!empty($disabledOperations) && in_array($operation, $disabledOperations)) {
+                $route = request()->path();
+                $message = "The '{$operation}' operation is not allowed on route '{$route}'.";
+                abort(405, $message);
+            }
+        }
+     }
+
     /*
      |------------------------------------------------
      | Get Exist Relation From Query String
@@ -671,14 +708,14 @@ trait LaravelControllerTrait
      */
     protected function _getExistingRelationsFromQueryString($queryString=null, $relationModel=null)
     {
-        $declearedEelationModels = $this->_getRelationModels($relationModel);
+        $declearedRelationModels = $this->_getRelationModels($relationModel);
 
-        if (!is_null($queryString) && !empty($declearedEelationModels)) {
+        if (!is_null($queryString) && !empty($declearedRelationModels)) {
             $loadModelQueryStringArr = explode($this->_getQueryStringLoadModelDelimiter(), $queryString);
             
             // remove all the elements in $loadModelQueryStringArr that do not exist 
             // in the $validateRelationModels
-            $models = array_intersect($loadModelQueryStringArr, $declearedEelationModels);
+            $models = array_intersect($loadModelQueryStringArr, $declearedRelationModels);
             return array_values($models);
         }
         return [];
@@ -709,15 +746,30 @@ trait LaravelControllerTrait
      */
     protected function _getQueryStringLoadModelDelimiter(): string
     {
-        if (isset($this->_load_model_delimiter)) {
+        if (property_exists($this, "_load_model_delimiter")) {
             return $this->_load_model_delimiter;
         }
         return ":";
     }
 
+    protected function _canCountResult($relationship=null): bool
+    {
+        $property = "_enable_result_count";
+
+        if (!is_null($relationship)) {
+            $property = "_enable_{$relationship}_result_count";
+        }
+
+        if (property_exists($this, $property)) {
+            return (bool) $this->$property;
+        }
+
+        return false;
+    }
+
     protected function _getPaginate(): int|null
     {
-        if (isset($this->_paginate)) {
+        if (property_exists($this, "_paginate")) {
             return $this->_paginate;
         }
         return null;
@@ -821,9 +873,9 @@ trait LaravelControllerTrait
      * @param $model model class
      * @param $relationModelName determine the relationship method name of the model perform database operation
      * 
-     * @return void
+     * @return mixed
      */
-    private function __callPreExecute(string $operation, ?Model $model, ?string $relationModelName=null, ?Model $parentModel=null)
+    private function __callPreExecute(string $operation, ?Model $model, ?string $relationModelName=null, ?Model $parentModel=null): mixed
     {
         $childClassMethod = !is_null($relationModelName)? "_{$relationModelName}_pre_execute" : "_pre_execute";
 

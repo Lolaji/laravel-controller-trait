@@ -39,7 +39,19 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
 
         protected $_model = User::class;
 
+        // Return the total number of parent model (in this case User model)
+        // if count=true is added to the query string
+        // and if this is set to false or not declared 
+        // it will not return the total number of the parent model regardless
+        // wheather you add count=true query string
+        protected $_enable_result_count=true;
+
         protected $_relation_models = ["profile", "posts"];
+
+        // Perform the same function as the $_enable_count_result except
+        // it works specifically for the relation model you declared in $_relation_models
+        protected $_enable_posts_result_count=true;
+
         protected $_fillable = ["username", "email"];
 
         protected $_profile_fillable = ["firstname", "lastname", "date_of_birth"];
@@ -67,7 +79,7 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
 
         protected _hook(Request $request, $model_result, $operation)
         {
-            switch($opertion) {
+            switch($operation) {
                 case 'created':
                         // Code here execute after user is created
                     break;
