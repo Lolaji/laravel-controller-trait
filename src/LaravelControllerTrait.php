@@ -8,6 +8,7 @@ use Lolaji\LaravelControllerTrait\Helpers\Arr as HelpersArr;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
+use Lolaji\LaravelControllerTrait\Enums\EloquentEagerLoadType;
 use Lolaji\LaravelControllerTrait\Filters\MorphFilter;
 use Lolaji\LaravelControllerTrait\Helpers\Str;
 
@@ -100,7 +101,11 @@ trait LaravelControllerTrait
             $response['success'] = false;
             $response['message'] = "Unable to {$operation} due to system error. Please try again.";
         }
-        return $response;
+
+        return $this->__makeRequestResponse(
+            response: $response,
+            operation: $operation,
+        );
     }
 
     public function upsertByForeign (Request $request, string $id, string $relationModel, ?string $relationModelId=null)
@@ -357,8 +362,13 @@ trait LaravelControllerTrait
         $loadModels = $this->_getExistingRelationsFromQueryString($loadModelQueryString, $relationModel);
 
         if (!empty($loadModels)) {
-            $loadMethod = ($countRelationship == true) ? "loadCount" : "load";
-            $modelObj = $modelObj->$loadMethod($loadModels);
+            $this->__eagerLoadRelation(
+                modelObj: $modelObj,
+                loadModels: $loadModels,
+                countRelationship: $countRelationship,
+                relationModel: $relationModel,
+                loadType: EloquentEagerLoadType::LOAD,
+            );
         }
 
         //call the $this->_resource() method if defined in the controller.
@@ -385,7 +395,7 @@ trait LaravelControllerTrait
         $where = $request->get('filters');
         $fields = $request->get('fields', []);
         $relationshipQueryString = $request->get('with');
-        $countRelationship = $request->get("count_with", false);
+        $countRelationship = $request->get("count_with", null);
         $getFirst = $request->get("get_first", false);
         $paginate = $request->get('paginate');
         $page = $request->get("page", 1);
@@ -452,8 +462,12 @@ trait LaravelControllerTrait
 
         $withModels = $this->_getExistingRelationsFromQueryString($relationshipQueryString, $relationModel);
         if(!empty($withModels)) {
-            $withMethod = ($countRelationship) ? "withCount" : "with";
-            $instance = $instance->$withMethod($withModels);
+            $this->__eagerLoadRelation(
+                modelObj: $instance,
+                loadModels: $withModels,
+                countRelationship: $countRelationship,
+                relationModel: $relationModel,
+            );
         }
 
         if ($getFirst == true) {
@@ -775,18 +789,69 @@ trait LaravelControllerTrait
         return null;
     }
 
+    protected function _httpResponseEnabled(?string $relationModelName=null): bool
+    {
+        $property = "_enable_http_response";
+
+        if (!is_null($relationModelName)) {
+            $property = "_enable_{$relationModelName}_http_response";
+        }
+
+        return  property_exists($this, $property) && $this->$property === true;
+    }
+
     public function setValidateRules($validate_rules = [], $validate_message = [])
     {
         $this->__validate_message = $validate_message;
         $this->__validate_rules = $validate_rules;
     }
 
+    private function __eagerLoadRelation(
+        mixed &$modelObj, 
+        array $loadModels, 
+        ?string $countRelationship = null, 
+        ?EloquentEagerLoadType $loadType = EloquentEagerLoadType::WITH, 
+        ?string $relationModel = null
+    ) {
+        $countRelationship = json_decode($countRelationship);
+
+        $loadMethod = $loadType->value;
+        $loadCountMethod = "{$loadMethod}Count";
+
+        if (gettype($countRelationship) == "boolean" && $countRelationship == true) {
+            // $loadMethod = ((bool) $countRelationship === true) ? "loadCount" : "load";
+            $loadMethod = "{$loadType->value}Count";
+            $modelObj = $modelObj->$loadCountMethod($loadModels);
+        } else {
+            if (gettype ($countRelationship) == "string") {
+                $loadCountModels = $this->_getExistingRelationsFromQueryString($countRelationship, $relationModel);
+
+                if (!empty($loadCountModels)) {
+                    $remainingLoadModels = array_diff($loadModels, $loadCountModels);
+                    $modelObj = $modelObj->$loadCountMethod($loadCountModels);
+                    if (!empty($remainingLoadModels)) {
+                        $modelObj = $modelObj->$loadMethod($remainingLoadModels);
+                    }
+                } else {
+                    $modelObj = $modelObj->$loadMethod($loadModels);
+                }
+            } else {
+                $modelObj = $modelObj->$loadMethod($loadModels);
+            }
+        }
+    }
+
     private function __validate (Request $request, $relationModelName=null, $parentModel=null)
     {
         $response = ['success'=>false, 'message'=>[]];
 
-        $validatation = function($validate_rules, $validate_message) use ($request, $response) {
+        $validatation = function($validate_rules, $validate_message) use ($relationModelName, $request, $response) {
             $validate = Validator::make($request->all(), $validate_rules, $validate_message);
+            
+            if ($this->_httpResponseEnabled($relationModelName)) {
+                $validate->validate();
+            }
+
             if ($validate->fails()) {
                 $response['success'] = false;
                 foreach(Arr::dot($request->all()) as $key => $value) {
@@ -935,6 +1000,20 @@ trait LaravelControllerTrait
         }
 
         return $results;
+    }
+
+    private function __makeRequestResponse(mixed $response, string $operation, ?string $relationModelName = null)
+    {
+        $methodName = "_response";
+        if (!is_null($relationModelName)) {
+            $methodName = "_{$relationModelName}{$methodName}";
+        }
+
+        if (method_exists($this, $methodName)) {
+            return $this->$methodName($response, $operation);
+        }
+
+        return $response;
     }
 
     public function setResponse ($response) 

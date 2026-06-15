@@ -44,25 +44,41 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
         // and if this is set to false or not declared 
         // it will not return the total number of the parent model regardless
         // wheather you add count=true query string
-        protected $_enable_result_count=true;
+        protected bool $_enable_result_count=true;
 
-        protected $_relation_models = ["profile", "posts"];
+        protected array $_relation_models = ["profile", "posts"];
 
         // Perform the same function as the $_enable_count_result except
         // it works specifically for the relation model you declared in $_relation_models
-        protected $_enable_posts_result_count=true;
+        protected bool $_enable_posts_result_count=true;
 
-        protected $_fillable = ["username", "email"];
+        // Return the HTTP response of the form error and requests if set to true
+        // This means it calls the ->validate() method on 
+        // Validator::make(..., ...) like  Validator::make(..., ...)->validate()
+        // and response()->json(...) after request completed.
+        protected bool $_enable_http_response = true;
+        protected bool $_enable_posts_http_response = true;
 
-        protected $_profile_fillable = ["firstname", "lastname", "date_of_birth"];
+        // When $_disable_operations or $_disable_{relationship}_operations is defined
+        // those value assigned would return 405 Not Allowed
+        protected array $_disable_operations = ["upsert", "fetch", ...];
+        protected array $_disable_posts_operations = ["upsert", "fetch", ...];
 
-        protected $_result_filters = [
+        protected array $_fillable = ["username", "email"];
+
+        protected array $_profile_fillable = ["firstname", "lastname", "date_of_birth"];
+
+        // The database columns the results will be sorted
+        // if not provided the sort (like ->orderby(...)) would not be applied
+        protected array $_sort_columns = ["id", "created_at"];
+
+        protected array $_result_filters = [
             "active" => "=",
             "status" => "="
             ...
         ];
 
-        protected function _validate_rules()
+        protected function _validate_rules(): array
         {
             return [
                 "username" => ['required', 'string'],
@@ -125,6 +141,12 @@ First create your controller, add ""use Lolaji\LaravelControllerTrait\LaravelCon
                 "firstname" => ["string", "max:20"],
                 ...
             ];
+        }
+
+        // if you would like to serialize the User form fillable data
+        protected function _serialze_input(array $input): array
+        {
+            return $input;
         }
 
         // if you would like to serialize the profile relationship fillable data
